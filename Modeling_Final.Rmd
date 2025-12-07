@@ -1,0 +1,280 @@
+---
+title: "Modeling_V3"
+output: html_document
+date: "2025-10-18"
+---
+
+## Data Preparation
+After handling all of the NAs and taking out variables that were not helpful for the prediction model, I found that feature engineering had to be done to see some increase in the AUC. The final dataset that I used to build my best performing prediction model included variables such as the median of EXT_SOURCE_1, EXT_SOURCE_2, and EXT_SOURCE_3, the ratio between amount credit and amount annuity, and the ratio between amount annuity and amount credit. 
+
+```{r loading and importing packages and data}
+
+# Load packages
+suppressMessages(suppressWarnings({
+library(tidymodels)
+library(caret)
+library(tidyr)
+library(xgboost)}))
+
+# Import data
+credit <- read.csv("clean4.csv")
+
+# Removing "X" column
+credit <- credit |>
+  select(-X)
+
+# Factoring target variable so 0 = No and 1 = Yes
+credit <- credit |>
+  mutate(TARGET = factor(TARGET, levels = c(0, 1), labels = c("No", "Yes")))
+
+# Factoring categorical variables
+credit$CODE_GENDER <- as.factor(credit$CODE_GENDER)
+credit$NAME_CONTRACT_TYPE <- as.factor(credit$NAME_CONTRACT_TYPE)
+credit$FLAG_OWN_CAR <- as.factor(credit$FLAG_OWN_CAR)
+credit$NAME_EDUCATION_TYPE <- as.factor(credit$NAME_EDUCATION_TYPE)
+
+# Splitting data - 80% train and 20 % test
+set.seed(123)
+credit_testtrn <- initial_split(credit, prop = 0.8, strata = TARGET)
+credit_train <- training(credit_testtrn)
+credit_test <- testing(credit_testtrn)
+
+```
+
+# Modeling Process
+The models that were created from the data included logistic regression models, decision trees, random forests, and boosted trees. All of these used 5-fold cross validation to evaluate how well it will generalize to unseen data.
+
+The best model that I created was a boosted tree model with an AUC of 0.7542. The hyperparameters were:
+
+trees = 2,000
+tree depth = 1
+learning rate = 0.1
+
+
+```{r logistic regression model}
+
+# 5-fold cross validation
+cv_control <- trainControl(
+  method = "cv",
+  number = 5,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE
+)
+
+# Fitting a simple logistic regression model with cross validation
+cv_model1 <- train(
+  TARGET ~., 
+  data = credit_train,
+  method = "glm", 
+  family = "binomial", 
+  trControl = cv_control,
+  metric = "ROC"
+)
+
+cv_model1
+
+# 5-fold cross-validation with downsampling
+cv_control2 <- trainControl(
+  method = "cv",
+  number = 5,
+  sampling = "down",
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+# Fitting a simple logistic regression model with cross validation and downsampling
+cv_model2 <- train(
+  TARGET ~., # Uses TARGET as the outcome variable and all other columns as predictors
+  data = credit_train,
+  method = "glm", # Fits a logistic regression model
+  family = "binomial", # Binary outcome
+  trControl = cv_control2, # Controls how cross-validation is done
+  metric = "ROC" # Uses AUC as the performance metric
+)
+
+cv_model2
+
+log_auc <- 0.7427682
+
+```
+
+
+```{r boosted tree model}
+
+# Defines the model formulation, TARGET is the outcome variable and also using step_dummy to convert factors into numeric binary form
+rec_credit <- recipe(TARGET ~ ., credit_train) |>
+  step_dummy(all_nominal_predictors())
+
+# Defines the boosted decision tree model and specifies hyperparameters (trees, tree depth, and learn rate)
+model_credit <- boost_tree(
+  trees = tune(),
+  tree_depth = tune(),
+  learn_rate = tune()) |>
+  set_engine("xgboost", verbosity = 0) |> # Computational engine is XGBoost
+  set_mode("classification") # Ourmodel type is classification
+
+# Creates various combinations of the three hyperparameters, we want 2 levels of each hyperparameter
+hyper_grid <- grid_regular(
+  trees(),
+  tree_depth(),
+  learn_rate(),
+  levels = 2
+)
+
+# 5-fold cross validation
+credit_folds <- vfold_cv(credit_train, v =5)
+
+# Aggregate all of the above to fit the model and use it for prediction
+credit_wf <- workflow() |>
+  add_model(model_credit) |>
+  add_recipe(rec_credit)
+
+# Compute the performance metric AUC
+doParallel::registerDoParallel(cores = 11) # Registers that 11 cores will be used for parallel execution of the model
+
+control <- control_grid(save_pred = TRUE, verbose = TRUE) # Updates where the process is at
+
+runtime <- system.time({
+set.seed(123)
+credit_tune <- credit_wf |>
+  tune_grid(
+    resamples = credit_folds,
+    grid = hyper_grid,
+    metrics = metric_set(roc_auc),
+    control = control
+  )
+})
+
+runtime
+
+# Selects the best hyperparameter combination
+best_model <- select_best(credit_tune, metric = "roc_auc")
+best_model
+
+collect_metrics(credit_tune) |>
+  filter(.metric == "roc_auc")
+
+```
+
+```{r final analysis of the boosted tree model}
+
+# Update the workflow which adds the best model to the workflow credit_wf we created earlier
+final_workflow <- credit_wf |>
+  finalize_workflow(best_model)
+
+# Fit the model using the best hyperparameter combination on the entire training set and then validate its performance on the test data
+final_fit <- final_workflow |>
+  last_fit(split = credit_testtrn)
+
+# Report AUC value
+final_fit |>
+  collect_metrics()
+
+boost_auc <- 0.7541884
+
+```
+## Model Performance
+My best model used a boosted tree model. The train set performance was 0.7572 and test set performance was 0.7542. It took about 3.8 hours (13,687 seconds) for the model to run. 
+
+```{r}
+
+# Plotting which variables played an important role
+library(vip)
+
+final_workflow |>
+  fit(data = credit_train) |>
+  extract_fit_parsnip() |>
+  vip(geom = "point")
+
+```
+
+
+```{r}
+
+full_credit <- read.csv("application_train.csv")
+
+full_credit_test <- initial_split(credit, prop = 0.8, strata = TARGET)
+
+test_fit <- final_workflow |>
+  last_fit(split = full_credit_test)
+
+test_fit |>
+  collect_metrics()
+
+```
+
+```{r}
+
+kaggle_test <- read.csv("application_test.csv")
+
+kaggle_test <- kaggle_test |>
+  rowwise() |>
+  mutate(
+    EXT_SOURCE_MED = median(c_across(c(EXT_SOURCE_1, EXT_SOURCE_2, EXT_SOURCE_3)), na.rm = TRUE),
+    RATIO_AMT_CREDIT_TO_AMT_ANNUITY = AMT_CREDIT / AMT_ANNUITY,
+    RATIO_AMT_ANNUITY_TO_AMT_CREDIT = AMT_ANNUITY / AMT_CREDIT
+  ) |>
+  ungroup()
+
+kaggle_test$NAME_CONTRACT_TYPE <- factor(kaggle_test$NAME_CONTRACT_TYPE,
+                                         levels = levels(credit_train$NAME_CONTRACT_TYPE))
+
+kaggle_test$CODE_GENDER <- factor(kaggle_test$CODE_GENDER,
+                                  levels = levels(credit_train$CODE_GENDER))
+
+kaggle_test$FLAG_OWN_CAR <- factor(kaggle_test$FLAG_OWN_CAR,
+                                   levels = levels(credit_train$FLAG_OWN_CAR))
+
+kaggle_test$NAME_EDUCATION_TYPE <- factor(kaggle_test$NAME_EDUCATION_TYPE,
+                                          levels = levels(credit_train$NAME_EDUCATION_TYPE))
+
+kaggle_test_prep <- bake(prep(rec_credit), new_data = kaggle_test)
+
+kaggle_pred <- predict(
+  extract_fit_parsnip(final_fit$.workflow[[1]]),
+  new_data = kaggle_test_prep,
+  type = "prob"
+)
+
+submission <- data.frame(
+  SK_ID_CURR = kaggle_test$SK_ID_CURR,
+  TARGET = kaggle_pred$.pred_Yes
+)
+
+write.csv(submission, "submission.csv", row.names = FALSE)
+
+```
+```{r}
+kaggle_test <- read.csv("application_test.csv")
+
+kaggle_test <- kaggle_test |>
+  rowwise() |>
+  mutate(
+    EXT_SOURCE_MED = median(c_across(c(EXT_SOURCE_1, EXT_SOURCE_2, EXT_SOURCE_3)), na.rm = TRUE),
+    RATIO_AMT_CREDIT_TO_AMT_ANNUITY = AMT_CREDIT / AMT_ANNUITY,
+    RATIO_AMT_ANNUITY_TO_AMT_CREDIT = AMT_ANNUITY / AMT_CREDIT
+  ) |>
+  ungroup()
+
+kaggle_test$NAME_CONTRACT_TYPE <- factor(kaggle_test$NAME_CONTRACT_TYPE,
+                                         levels = levels(credit_train$NAME_CONTRACT_TYPE))
+
+kaggle_test$CODE_GENDER <- factor(kaggle_test$CODE_GENDER,
+                                  levels = levels(credit_train$CODE_GENDER))
+
+kaggle_test$FLAG_OWN_CAR <- factor(kaggle_test$FLAG_OWN_CAR,
+                                   levels = levels(credit_train$FLAG_OWN_CAR))
+
+kaggle_test$NAME_EDUCATION_TYPE <- factor(kaggle_test$NAME_EDUCATION_TYPE,
+                                          levels = levels(credit_train$NAME_EDUCATION_TYPE))
+
+pred_probs <- predict(final_fit, kaggle_test, type = "prob")
+
+submission <- tibble(
+  SK_ID_CURR = kaggle_test$SK_ID_CURR,
+  TARGET = pred_probs$.pred_Yes
+)
+
+write.csv(submission, "submission.csv", row.names = FALSE)
+```
+

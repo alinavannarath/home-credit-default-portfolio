@@ -1,0 +1,665 @@
+---
+title: "EDA"
+author: "Alina Vannarath"
+date: "September 28, 2025"
+output: 
+  html_document:
+    number_sections: yes
+    toc: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Introduction
+
+
+The business problem is Home Credit is struggling with predicting how capable each applicant is of repaying a loan. Picking the wrong clients increases defaults, which decreases profitability for the company. Similarly, rejecting the right clients who are likely to repay can also contribute to revenue loss.
+
+This is a predictive analytics project and will use historical data on customers to find strong predictors for default. The model will use the same information on current customers to predict the probability that they will default in the near future.
+
+
+# Description of the data
+
+```{r explore the target variable}
+
+# Import packages
+suppressMessages(suppressWarnings({
+library(tidyverse)
+library(skimr)
+library(janitor)
+library(dplyr)
+library(psych)}))
+
+# Import csv file
+train <- read.csv(file = "application_train.csv")
+test <- read.csv(file = "application_test.csv")
+
+# Quick look at the data
+train |>
+  str()
+
+train |>
+  summary()
+
+# Check to see if the data is balanced
+prop.table(table(train$TARGET))
+
+```
+
+
+The application.train.csv data we have available has 307,511 observations with 122 different variables. The majority of the variables are numeric while others are characters.
+
+Our initial exploration is to check how balanced our data is. This was conducted by doing a simple prop.table on the target variable.
+
+- TARGET variable: 1 = default 0 = no default
+
+We see that the data is unbalanced with respect to the target because approximately 92% of the data has 0 for the target variable (no default) and 8% for 1 (default). In a simple model consisting in a majority class classifier, the model would predict 0 all the time and would be accurate 92% of the time.
+
+
+# Discussion of missing data
+
+```{r missing data}
+
+# Find columns with NA
+NA_count <- train |>
+  summarize(across(everything(), ~ sum(is.na(.))))
+#NA_count
+
+# Outputs only the variables with missing data
+NA_col <- train |>
+  select(where(~ any(is.na(.))))
+#NA_col
+
+# Organizing a table that shows the counts and percentages of missing data for each column
+NA_summary <- train |>
+  summarise(across(everything(),
+                   list(
+                     missing_count = ~ sum(is.na(.)),
+                     missing_pct = ~ mean(is.na(.)) * 100 # Puts it in percentage form
+                   ),
+                   .names = "{.col}__{.fn}")) |> # Placeholder for original column name and name of the function
+  pivot_longer(cols = everything(),
+               names_to = c("variable", ".value"), 
+               names_sep = "__") |>
+  arrange(desc(missing_pct)) |> # Arranges from greatest to least
+  mutate(missing_pct = round(missing_pct, 4)) # Rounds to 4 decimal places
+NA_summary
+
+# Filtering out the variables without any missing data and arranging it so we see which ones have the least amount 
+NA_summary |>
+  filter(missing_pct > 0)
+
+```
+
+
+To explore the scope of missing data, we first count the number of missing data in each column. Out of the 122 variables that we started with, 61 of those have missing data. The variables with the most missing data are COMMONAREA_AVG, COMMONAREA_MODE, and COMMONAREA_MEDI which have 69.87% of its' data missing (214,865 observations did not have data for these variables). 
+
+
+```{r cleaning the data}
+
+# Dropping rows with very little missing data
+train_clean <- train |>
+  filter(!is.na(AMT_ANNUITY), 
+         !is.na(DAYS_LAST_PHONE_CHANGE), 
+         !is.na(CNT_FAM_MEMBERS),
+         !is.na(OBS_30_CNT_SOCIAL_CIRCLE),
+         !is.na(DEF_30_CNT_SOCIAL_CIRCLE),
+         !is.na(OBS_60_CNT_SOCIAL_CIRCLE),
+         !is.na(DEF_60_CNT_SOCIAL_CIRCLE),
+         !is.na(EXT_SOURCE_2),
+         !is.na(AMT_GOODS_PRICE))
+
+# Updating columns after taking out NAs
+NA_summary_clean <- train_clean |>
+  summarise(across(everything(),
+                   list(
+                     missing_count = ~ sum(is.na(.)),
+                     missing_pct = ~ mean(is.na(.)) * 100 # Puts it in percentage form
+                   ),
+                   .names = "{.col}__{.fn}")) |> # Placeholder for original column name and name of the function
+  pivot_longer(cols = everything(),
+               names_to = c("variable", ".value"), 
+               names_sep = "__") |>
+  arrange(desc(missing_pct)) |> # Arranges from greatest to least
+  mutate(missing_pct = round(missing_pct, 4)) # Rounds to 4 decimal places
+
+# Checking to see if the NAs actually dropped from those 3 variables
+NA_summary_clean |>
+  filter(missing_pct > 0) |>
+  tail(20)
+
+```
+
+
+## Removing rows with missing data
+The variables with the least amount of missing data are DAYS_LAST_PHONE_CHANGE, CNT_FAM_MEMBERS, AMT_ANNUITY, EXT_SOURCE_2, AMT_GOODS_PRICE, OBS_30_CNT_SOCIAL_CIRCLE, DEF_30_CNT_SOCIAL_CIRCLE, OBS_60_CNT_SOCIAL_CIRCLE, and DEF_60_CNT_SOCIAL_CIRCLE. These all had less than 1% of its data missing, so I removed those rows since the amount is small enough that it's not going to have a substantial impact on our data exploration.
+
+We still have many variables that have a lot of missing data, so we must consider if we either remove those observations or remove the entire column if the majority of the data is missing. If we think a column possesses enough predictive power, we can also replace the NAs with the mean, median, or mode.
+
+## Using AI to rank the top 20 variables for default predictability
+I asked ChatGPT to identify the top 20 variables that it believes would be most predictive of default. Here is what it said:
+
+1	EXT_SOURCE_3	Highly predictive credit score from external bureau; strongly correlates with default risk.
+
+2	EXT_SOURCE_2	Another external risk score; often complementary to EXT_SOURCE_3.
+
+3	EXT_SOURCE_1	Older or alternative bureau score; combined with other EXT_SOURCE variables improves prediction.
+
+4	AMT_CREDIT	Loan amount requested: larger loans are harder to repay.
+
+5	AMT_ANNUITY	Monthly installment amount relative to income indicates payment stress.
+
+6	AMT_INCOME_TOTAL	Total income determines affordability.
+
+7	DAYS_BIRTH	Age: very young or very old borrowers may have higher risk.
+
+8	DAYS_EMPLOYED	Employment duration: stability reduces default risk.
+
+9	CREDIT_DAY_OVERDUE	Number of days past due on previous loans; directly measures prior repayment problems.
+
+10	AMT_CREDIT_SUM_OVERDUE	Total overdue amounts from prior loans; strong predictor of default.
+
+11	AMT_CREDIT_SUM_DEBT	Total debt indicates financial burden.
+
+12	AMT_GOODS_PRICE	Price of financed goods; higher value may signal higher risk.
+
+13	CNT_CHILDREN	Number of children affects disposable income.
+
+14	CNT_FAM_MEMBERS	Household size affects financial obligations.
+
+15	NAME_INCOME_TYPE	Income type (e.g., salaried, business) correlates with repayment stability.
+
+16	NAME_EDUCATION_TYPE	Higher education often correlates with higher and more stable income.
+
+17	DAYS_CREDIT	Age of oldest credit line; more experience with credit usually reduces risk.
+
+18	OBS_30_CNT_SOCIAL_CIRCLE	Number of social connections; indirectly signals social and financial stability.
+
+19	DEF_30_CNT_SOCIAL_CIRCLE	Defaults in social circle can predict individual default risk.
+
+20	FLAG_OWN_REALTY	Owning real estate provides collateral/security; reduces default probability.
+
+The reasoning that it provided made sense to me. Some of them didn't make much sense to me like OBS_30_CNT_SOCIAL_CIRCLE and DEF_30_CNT_SOCIAL_CIRCLE because I don't think using the people around someone to predict their own chances of default is strongly correlated.
+
+Based on the ranking that ChatGPT provided, I have a better idea of which columns to completely remove instead of trying to replace the NA values. We will remove all columns that have more than 40% NAs in its data.
+
+
+```{r removing columns that have low predictive power}
+
+# Remove columns with <= 40% missing
+na_proportion <- colSums(is.na(train_clean))/nrow(train_clean)
+train_clean <- train_clean[ , na_proportion <= 0.4]
+
+# Checking new train_clean after removing columns
+NA_summary_clean <- train_clean |>
+  summarise(across(everything(),
+                   list(
+                     missing_count = ~ sum(is.na(.)),
+                     missing_pct = ~ mean(is.na(.)) * 100 # Puts it in percentage form
+                   ),
+                   .names = "{.col}__{.fn}")) |> # Placeholder for original column name and name of the function
+  pivot_longer(cols = everything(),
+               names_to = c("variable", ".value"), 
+               names_sep = "__") |>
+  arrange(desc(missing_pct)) |> # Arranges from greatest to least
+  mutate(missing_pct = round(missing_pct, 4)) # Rounds to 4 decimal places
+
+NA_summary_clean |>
+  filter(missing_pct > 0)
+
+```
+
+
+After removing the columns with more than 40% NAs, we are left with 7 variables with about 13-19% NAs. 19% of EXT_SOURCE_3 are NAs, but since that was listed in the top 20 most promising predictors, we are going to keep that column and replace the NAs with the median because it won't be highly impacted by extremely low or high values.
+
+
+```{r replacing NAs with the median}
+
+train_clean$EXT_SOURCE_3[is.na(train_clean$EXT_SOURCE_3)] <- median(train_clean$EXT_SOURCE_3, na.rm = TRUE)
+
+# Checking new train_clean after replacing NAs with median
+NA_summary_clean <- train_clean |>
+  summarise(across(everything(),
+                   list(
+                     missing_count = ~ sum(is.na(.)),
+                     missing_pct = ~ mean(is.na(.)) * 100 # Puts it in percentage form
+                   ),
+                   .names = "{.col}__{.fn}")) |> # Placeholder for original column name and name of the function
+  pivot_longer(cols = everything(),
+               names_to = c("variable", ".value"), 
+               names_sep = "__") |>
+  arrange(desc(missing_pct)) |> # Arranges from greatest to least
+  mutate(missing_pct = round(missing_pct, 4)) # Rounds to 4 decimal places
+
+NA_summary_clean |>
+  filter(missing_count > 0)
+
+```
+
+
+We are left with 6 variables left with 13% NAs. These columns will just be removed since they are not in the top 20 predictors.
+
+
+```{r removing the rest of NA columns}
+
+train_clean <- train_clean[ , colSums(is.na(train_clean)) == 0]
+
+# Checking new train_clean after removing all NAs
+NA_summary_clean <- train_clean |>
+  summarise(across(everything(),
+                   list(
+                     missing_count = ~ sum(is.na(.)),
+                     missing_pct = ~ mean(is.na(.)) * 100 # Puts it in percentage form
+                   ),
+                   .names = "{.col}__{.fn}")) |> # Placeholder for original column name and name of the function
+  pivot_longer(cols = everything(),
+               names_to = c("variable", ".value"), 
+               names_sep = "__") |>
+  arrange(desc(missing_pct)) |> # Arranges from greatest to least
+  mutate(missing_pct = round(missing_pct, 4)) # Rounds to 4 decimal places
+
+NA_summary_clean |>
+  filter(missing_count > 0)
+
+```
+
+
+Now we are left with 71 variables. Next, we are going to factor the character variables.
+
+
+```{r factor}
+
+# Converting character variables to factors
+train_clean_1 <- train_clean |>
+  mutate(across(where(is.character), as.factor))
+
+# Checking to see the factor levels of each column
+factor_vars <- train_clean_1[, sapply(train_clean_1, is.factor)]
+factor_levels <- lapply(factor_vars, levels)
+factor_levels
+
+```
+
+
+Although we cleaned up all the NAs, there are still some observations with blanks or other weird data like "XNA" in some columns. We are going to clean those up. 
+
+
+```{r cleaning blank and unknown data}
+
+# Clearing observations with XNA and deleting that factor level
+train_clean_1 <- train_clean_1 |>
+  filter(CODE_GENDER != "XNA") |>
+  mutate(CODE_GENDER = droplevels(CODE_GENDER))
+
+train_clean_1 <- train_clean_1 |>
+  filter(ORGANIZATION_TYPE != "XNA") |>
+  mutate(ORGANIZATION_TYPE = droplevels(ORGANIZATION_TYPE))
+
+# Clearing observations with blanks and deleting that factor level
+train_clean_2 <- train_clean_1 |>
+  filter(NAME_TYPE_SUITE != "") |>
+  mutate(NAME_TYPE_SUITE = droplevels(NAME_TYPE_SUITE))
+
+# Checking to see the factor levels
+factor_vars <- train_clean_2[, sapply(train_clean_2, is.factor)]
+factor_levels <- lapply(factor_vars, levels)
+#factor_levels
+
+```
+
+
+There are some factored variables where I don't think are going to be promising predictors based on their descriptions. For example, walls material doesn't seem like it would predict whether someone will default or not. We are going to remove those columns.
+
+
+```{r removing more columns}
+
+train_clean_2 <- train_clean_2 |>
+  select(-WALLSMATERIAL_MODE, -EMERGENCYSTATE_MODE, -FONDKAPREMONT_MODE, -HOUSETYPE_MODE)
+
+# Checking to see the factor levels
+factor_vars <- train_clean_2[, sapply(train_clean_2, is.factor)]
+factor_levels <- lapply(factor_vars, levels)
+factor_levels
+
+```
+
+
+Occupation type has "" inputs but I don't want to remove those blanks because that would remove a lot of observations that could be helpful. I also don't want to move the column entirely because occupation type might have some significance in predicting default. So, we are going to replace those "" with "Unknown". 
+
+
+```{r replacing blanks with unknown for occupation type}
+
+# Replacing "" with "Unknown" and make it a factor level
+train_clean_3 <- train_clean_2 |>
+  mutate(OCCUPATION_TYPE = as.character(OCCUPATION_TYPE),
+         OCCUPATION_TYPE = if_else(OCCUPATION_TYPE == "", "Unknown", OCCUPATION_TYPE),
+         OCCUPATION_TYPE = as.factor(OCCUPATION_TYPE))
+
+# Checking to see the factor levels
+factor_vars <- train_clean_3[, sapply(train_clean_3, is.factor)]
+factor_levels <- lapply(factor_vars, levels)
+#factor_levels
+
+```
+
+
+The data now looks clean enough to do analysis on it. 
+
+
+## Identify my own list of the top 15-20 most promising predictors
+
+```{r identify strong predictors}
+
+# Select numeric predictors 
+numeric_vars <- names(train_clean_3)[sapply(train_clean_3, is.numeric)]
+numeric_vars <- setdiff(numeric_vars, "TARGET")
+
+# Compute correlation with the target variable
+cor_with_target <- sapply(train_clean_3[numeric_vars], function(x) cor(x, train_clean_3$TARGET, use = "complete.obs"))
+
+# Create a table with variable names and correlation values
+cor_table <- data.frame(
+  Variable = names(cor_with_target),
+  Correlation = cor_with_target
+)
+
+cor_table <- cor_table[order(abs(cor_table$Correlation), decreasing = TRUE), ]
+cor_table
+
+```
+
+
+Looking at the correlations, we are going to remove the columns with FLAG_DOCUMENT because they are all towards the bottom of the correlation table. 
+
+
+```{r removing FLAG DOCUMNET columns}
+
+# Removing columns that contains "FLAG_DOCUMENT" in the name so we don't have to list out each of them
+train_clean_4 <- train_clean_3 |>
+  select(-contains("FLAG_DOCUMENT"))
+
+# Removing other variables because they have weak correlation
+train_clean_4 <- train_clean_4 |>
+  select(-FLAG_CONT_MOBILE, -FLAG_EMAIL, -FLAG_EMP_PHONE, -FLAG_WORK_PHONE, -FLAG_PHONE, -FLAG_MOBIL, -REG_CITY_NOT_LIVE_CITY, -REG_CITY_NOT_WORK_CITY, -REG_REGION_NOT_LIVE_REGION, -REG_REGION_NOT_WORK_REGION, -LIVE_REGION_NOT_WORK_REGION, -LIVE_CITY_NOT_WORK_CITY, -HOUR_APPR_PROCESS_START, -SK_ID_CURR, -OBS_30_CNT_SOCIAL_CIRCLE, -OBS_60_CNT_SOCIAL_CIRCLE, -CNT_CHILDREN, -CNT_FAM_MEMBERS, -DAYS_ID_PUBLISH, -DAYS_REGISTRATION, -DEF_30_CNT_SOCIAL_CIRCLE, -DEF_60_CNT_SOCIAL_CIRCLE)
+
+# Redoing correlation table 
+numeric_vars <- names(train_clean_4)[sapply(train_clean_4, is.numeric)]
+numeric_vars <- setdiff(numeric_vars, "TARGET")
+cor_with_target <- sapply(train_clean_4[numeric_vars], function(x) cor(x, train_clean_4$TARGET, use = "complete.obs"))
+cor_table_1 <- data.frame(
+  Variable = names(cor_with_target),
+  Correlation = cor_with_target
+)
+cor_table_1 <- cor_table_1[order(abs(cor_table_1$Correlation), decreasing = TRUE), ]
+cor_table_1
+
+```
+
+
+After removing variables with either weak correlations or descriptions that doesn't make sense in regards to predicting default, we are left with 25 variables in the train_clean_4 dataset. Next, we can look at the categorical variables (factor predictors) by running a chi-square test of independence.
+
+
+```{r chi square test}
+
+# Contingency table
+tab1 <- table(train_clean_4$NAME_CONTRACT_TYPE, train_clean_4$TARGET)
+tab2 <- table(train_clean_4$CODE_GENDER, train_clean_4$TARGET)
+tab3 <- table(train_clean_4$FLAG_OWN_CAR, train_clean_4$TARGET)
+tab4 <- table(train_clean_4$FLAG_OWN_REALTY, train_clean_4$TARGET)
+tab5 <- table(train_clean_4$NAME_TYPE_SUITE, train_clean_4$TARGET)
+tab6 <- table(train_clean_4$NAME_INCOME_TYPE, train_clean_4$TARGET)
+tab7 <- table(train_clean_4$NAME_EDUCATION_TYPE, train_clean_4$TARGET)
+tab8 <- table(train_clean_4$NAME_FAMILY_STATUS, train_clean_4$TARGET)
+tab9 <- table(train_clean_4$NAME_HOUSING_TYPE, train_clean_4$TARGET)
+tab10 <- table(train_clean_4$OCCUPATION_TYPE, train_clean_4$TARGET)
+tab11 <- table(train_clean_4$ORGANIZATION_TYPE, train_clean_4$TARGET)
+tab12 <- table(train_clean_4$WEEKDAY_APPR_PROCESS_START, train_clean_4$TARGET)
+
+# Run chi-square test
+chisq.test(tab1)
+chisq.test(tab2)
+chisq.test(tab3)
+chisq.test(tab4)
+chisq.test(tab5)
+chisq.test(tab6)
+chisq.test(tab7)
+chisq.test(tab8)
+chisq.test(tab9)
+chisq.test(tab10)
+chisq.test(tab11)
+chisq.test(tab12)
+
+# 0 values for unemployed so will drop this empty level
+train_clean_4 <- train_clean_4 |>
+  mutate(NAME_INCOME_TYPE = droplevels(NAME_INCOME_TYPE))
+
+# Dropping variables with high p-value
+train_clean_5 <- train_clean_4 |>
+  select(-FLAG_OWN_REALTY, -WEEKDAY_APPR_PROCESS_START, -NAME_TYPE_SUITE)
+
+summary(train_clean_5)
+
+```
+
+
+Categorical variables with non-statistically significant p-values were removed from the dataset. In total, we now have 22 variables in the train_clean_5 dataset. Looking at the summary of train_clean_5, there are a few things that stand out to me. First, DAYS_LAST_PHONE_CHANGE had a low p-value but from reading the description of the variable, I don't think knowing how many days before the application the client change their phone would be helpful to predict default. Second, NAME_HOUSING_TYPE has many different kinds of apartments listed and it seems like it would just add noise to the data. Third, having both REGION_RATING_CLIENT and REGION_RATING_CLIENT_W_CITY seems redundant, so either one can be removed.
+
+
+```{r removing variables that do not seem relevant}
+
+train_clean_5 <- train_clean_5 |>
+  select(-DAYS_LAST_PHONE_CHANGE, -NAME_HOUSING_TYPE, -REGION_RATING_CLIENT_W_CITY)
+
+```
+
+Now we are left with 19 variables in train_clean_5 (includes target). I have narrowed it down to 18 predictors that are correlated to default/no default:
+- NAME_CONTRACT_TYPE
+- CODE_GENDER
+- FLAG_OWN_CAR
+- AMT_INCOME_TOTAL
+- AMT_CREDIT
+- AMT_ANNUITY
+- AMT_GOODS_PRICE
+- NAME_INCOME_TYPE
+- NAME_EDUCATION_TYPE
+- NAME_FAMILY_STATUS
+- REGION_POPULATION_RELATIVE
+- DAYS_BIRTH
+- DAYS_EMPLOYED
+- OCCUPATION_TYPE
+- REGION_RATING_CLIENT
+- ORGANIZATION_TYPE
+- EXT_SOURCE_2
+- EXT_SOURCE_3
+
+# Exploratory visualizations and/or summary tables
+
+```{r visualizations}
+
+# See the balance of defaults vs. non-defaults
+ggplot(train_clean_5, aes(x = factor(TARGET))) +
+  geom_bar() +
+  labs(x = "Default", y = "Count", title = "Distribution of Defaults")
+
+summary_table <- train_clean_5 %>%
+  group_by(TARGET) %>%
+  summarise(
+    count = n()
+  )
+
+summary_table
+
+# Boxplot of Credit Amount and Default vs. Non-Default
+ggplot(train_clean_5, aes(x = factor(TARGET), y = AMT_CREDIT)) +
+  geom_boxplot() +
+  labs(x = "Default", y = "Credit Amount", title = "Credit Amount by Defaults")
+
+# See the balance of defaults vs. non-defaults by gender
+ggplot(train_clean_5, aes(x = CODE_GENDER, fill = factor(TARGET, labels = c("No Default", "Default")))) +
+  geom_bar() +
+  labs(x = "Gender", y = "Count", fill = "Loan Status", title = "Defaults vs Non-Defaults by Gender")
+
+# Boxplot of Income and Default vs. Non-Default
+ggplot(train_clean_5, aes(x = factor(TARGET), y = AMT_INCOME_TOTAL)) +
+  geom_boxplot() +
+  scale_y_log10() + #
+  labs(x = "Default", y = "Income Amount", title = "Income Amount by Defaults")
+
+```
+
+
+# Results
+The main part of this EDA assignment consisted of cleaning up the data. This meant that I had to sift through all the NAs, blanks, and odd inputs in each column and decide whether it was better to either delete the observations, delete the columns, or fill them in based on assumptions. From the original .csv file of 122 variables, I was able to narrow the dataset down to 19 variables. Most of the columns were deleted based on the fact that they had little to nothing to do with predicting default. They were just extra information that the company collected and was essentially adding noise to the data. Once I removed most of the noise, I started analyzing the data by calculating correlation and chi-square tests to see which one had the most potential as being a strong predictor for the target variable. 
+
+Out of the predictors that ChatGPT gave me as the strongest predictors of default based on the Kaggle dataset, I found that the majority of those predictors didn't make it to my final cut. Although the variable descriptions sounded like it would help predict default, I found that they were not strongly correlated to the target. However, I know that my set of variables are going to be different from someone else's EDA and they may pick other variables that I found to be not significant enough. 
+
+Once I finished cleaning the dataset, I made a few boxplots and histograms to see the distribution of the predictors against the target variable. There are more females in the dataset than there are males so they make up the majority of non-defaulters. I also plotted the distribution of income, split between defaulters and non-defaulters and found that the interquartile range for defaulters was actually smaller than non-defaulters. However, the defaulters did have a wider range of income and consisted of more outliers. 
+
+My biggest takeaway from this EDA is the importance of cleaning the data. It makes things much easier when you're able to dial down on which variables matter the most for your question. One interesting thing that I found was the strong relationship between DAYS_LAST_PHONE_CHANGE and default. It had a stronger correlation than AMT_CREDIT which did not make much sense to me. Although those two had a strong correlation, I ended up throwing out the variable because it seemed like a spurious correlation. Correlation does not imply causation and it's important to investigate further to rule out whether the variable has a causal effect. There were other variables like DAYS_LAST_PHONE_CHANGE that I threw out because it did not make sense as to why they would be strongly correlated to the target.
+
+
+# Questions
+- What do we do with blank data?
+- If there are too many factor levels (i.e. ORGANIZATION_TYPE), is it still worth keeping the column?
+- When is it appropriate to use mean, median, or mode to fill out NAs in data?
+- Since some columns are numeric variables, would computing different ratios be necessary to gain more insight on default?
+- How can you tell if something is just adding noise to the data?
+- What is the gender distribution of the data?
+- How does income level differ between default and non-defaults?
+- How does credit amount differ between default and non-defaults?
+
+
+# AI Usage Log
+## Prompt: How to remove columns with more than 40% NAs
+Output:
+
+Read CSV
+df <- read.csv("your_file.csv")
+
+Calculate proportion of missing values per column
+na_proportion <- colSums(is.na(df)) / nrow(df)
+
+Keep only columns with <= 40% missing
+df_clean <- df[ , na_proportion <= 0.4]
+
+Save the cleaned dataframe
+write.csv(df_clean, "your_file_cleaned.csv", row.names = FALSE)
+
+## Prompt: Name 15-20 variables that are most predictive of loan default from the list
+Output:
+
+1	EXT_SOURCE_3	Highly predictive credit score from external bureau; strongly correlates with default risk.
+
+2	EXT_SOURCE_2	Another external risk score; often complementary to EXT_SOURCE_3.
+
+3	EXT_SOURCE_1	Older or alternative bureau score; combined with other EXT_SOURCE variables improves 
+prediction.
+
+4	AMT_CREDIT	Loan amount requested: larger loans are harder to repay.
+
+5	AMT_ANNUITY	Monthly installment amount relative to income indicates payment stress.
+
+6	AMT_INCOME_TOTAL	Total income determines affordability.
+
+7	DAYS_BIRTH	Age: very young or very old borrowers may have higher risk.
+
+8	DAYS_EMPLOYED	Employment duration: stability reduces default risk.
+
+9	CREDIT_DAY_OVERDUE	Number of days past due on previous loans; directly measures prior repayment problems.
+
+10	AMT_CREDIT_SUM_OVERDUE	Total overdue amounts from prior loans; strong predictor of default.
+
+11	AMT_CREDIT_SUM_DEBT	Total debt indicates financial burden.
+
+12	AMT_GOODS_PRICE	Price of financed goods; higher value may signal higher risk.
+
+13	CNT_CHILDREN	Number of children affects disposable income.
+
+14	CNT_FAM_MEMBERS	Household size affects financial obligations.
+
+15	NAME_INCOME_TYPE	Income type (e.g., salaried, business) correlates with repayment stability.
+
+16	NAME_EDUCATION_TYPE	Higher education often correlates with higher and more stable income.
+
+17	DAYS_CREDIT	Age of oldest credit line; more experience with credit usually reduces risk.
+
+18	OBS_30_CNT_SOCIAL_CIRCLE	Number of social connections; indirectly signals social and financial stability.
+
+19	DEF_30_CNT_SOCIAL_CIRCLE	Defaults in social circle can predict individual default risk.
+
+20	FLAG_OWN_REALTY	Owning real estate provides collateral/security; reduces default probability.
+
+I prioritized external scores (EXT_SOURCE_x) first because in most Home Credit / Kaggle datasets, they are the strongest predictors.
+
+Loan terms (AMT_CREDIT, AMT_ANNUITY, AMT_GOODS_PRICE) are next, reflecting repayment burden.
+
+Demographics (age, employment, family size, income type) follow.
+
+Past credit behavior (overdue, debt, social default indicators) are also critical.
+
+Asset ownership (FLAG_OWN_REALTY) has smaller but consistent predictive value.
+
+## Prompt: How to remove columns that have NA values
+Output:
+
+Read CSV
+df <- read.csv("your_file.csv")
+
+Keep only columns that have no NAs
+df_no_na <- df[ , colSums(is.na(df)) == 0]
+
+Save the cleaned dataframe
+write.csv(df_no_na, "your_file_no_na.csv", row.names = FALSE)
+
+## Prompt: How to show the factor levels of each columns that are factors
+Output: 
+
+Select only factor columns
+factor_vars <- train_clean[, sapply(train_clean, is.factor)]
+
+Get the levels of each factor column
+factor_levels <- lapply(factor_vars, levels)
+
+View the levels
+factor_levels
+
+## Prompt: How to replace "" with "Unknown"
+Output: 
+
+train_clean <- train_clean %>%
+  mutate(OCCUPATION_TYPE = as.character(OCCUPATION_TYPE),
+         OCCUPATION_TYPE = if_else(OCCUPATION_TYPE == "", "Unknown", OCCUPATION_TYPE),
+         OCCUPATION_TYPE = as.factor(OCCUPATION_TYPE))
+
+## Prompt: How to run a chi-square test of independence
+Output:
+
+contingency table
+tab <- table(data$NAME_CONTRACT_TYPE, data$TARGET)
+
+run chi-square test
+chisq.test(tab)
+
+## Prompt: How to make a boxplot look better if it's very skewed
+Output:
+
+For skewed numeric data like income, a log transformation spreads out the bulk of the data:
+scale_y_log10() applies a log transformation on the y-axis.
+outlier.shape = NA hides extreme outliers so the main distribution is visible.
+
+## Prompt: How to show the percentage and count of missing data for each variable
+Output:
+
+missing_summary <- app_train %>%
+  summarise(across(everything(), 
+                   list(
+                     missing_count = ~ sum(is.na(.)),
+                     missing_pct   = ~ mean(is.na(.)) * 100
+                   ), 
+                   .names = "{.col}_{.fn}")) %>%
+  pivot_longer(cols = everything(),
+               names_to = c("variable", ".value"),
+               names_sep = "_") %>%
+  arrange(desc(missing_pct))
+
+head(missing_summary, 20)
