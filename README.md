@@ -1,4 +1,4 @@
-# Home Credit Default Project Fall 2025
+# Home Credit Default Project
 Portfolio containing all of my individual work on the Home Credit Default project that was done for my IS 6812 MSBA Capstone class.  
 
 ## Contents
@@ -8,7 +8,7 @@ Portfolio containing all of my individual work on the Home Credit Default projec
   - This is a predictive analytics project and will use historical data on customers to find strong predictors for default. The model will use the same information on current customers to predict the probability that they will default in the near future.
 
 - ## Group Solution to the Business Problem
-  - Utilizing the historical data provided by Home Credit, we ran various models to get the best possible area under the curve (AUC). First, we created a simple logistic regression model, which served as our baseline. From there, we generated a random forest model and a gradient boosted tree model. The gradient-boosted tree model was our best-performing model, with an AUC of 0.74.
+  - Utilizing the historical data provided by Home Credit, we ran various models to get the best possible area under the curve (AUC). First, we created a simple logistic regression model, which served as our baseline. From there, we generated a random forest model and a gradient-boosted tree model. The gradient-boosted tree model was our best-performing model, with an AUC of 0.74.
 
 - ## Individual Contribution to the Project
   - [Exploratory Data Analysis](https://github.com/alinavannarath/home-credit-default-portfolio/blob/main/EDA.Rmd): Analysis of Home Credit loans and loan applicants, including visualizations to help understand the distribution of variables.
